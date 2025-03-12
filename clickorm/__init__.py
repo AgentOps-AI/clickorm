@@ -10,7 +10,7 @@ from clickorm.exceptions import (
     ValidationError,
     SchemaError,
 )
-from clickorm.models import Model, Column
+from clickorm.models import Model, Column, Field
 from clickorm import types
 
 __version__ = "0.1.0"
@@ -18,6 +18,7 @@ __all__ = [
     "ConnectionManager",
     "Model",
     "Column",
+    "Field",
     "types",
     "ClickORMError",
     "ConnectionError",
