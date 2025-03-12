@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 from pydantic import Field as PydanticField
 
 from clickorm.types import ClickHouseType
+from clickorm.exceptions import ValidationError
 
 
 class Field:
@@ -103,3 +104,25 @@ class Field:
         Make the field callable to support Pydantic's field syntax.
         """
         return self.pydantic_field(*args, **kwargs)
+        
+    def validate(self, value: Any) -> Any:
+        """
+        Validate a value against the field's constraints.
+        
+        Args:
+            value: The value to validate.
+            
+        Returns:
+            The validated value.
+            
+        Raises:
+            ValidationError: If the value is invalid.
+        """
+        try:
+            # Use Pydantic's validation
+            model_field = self.pydantic_field.model_field
+            if model_field and hasattr(model_field, "validate"):
+                return model_field.validate(value, {}, loc="")
+            return value
+        except Exception as e:
+            raise ValidationError(f"Field validation failed: {e}")
