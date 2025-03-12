@@ -67,3 +67,4 @@ For more detailed documentation, see [the full documentation](https://github.com
 ## License
 
 MIT
+# Additional documentation will be added here
