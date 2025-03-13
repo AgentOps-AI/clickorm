@@ -10,6 +10,7 @@ A Python ORM framework for ClickHouse with Pydantic integration.
 - Support for all ClickHouse data types
 - Efficient connection management
 - Comprehensive error handling
+- Relationship mapping between models
 
 ## Installation
 
@@ -59,6 +60,54 @@ user.save()
 # Delete a user
 user.delete()
 ```
+
+## Relationship Mapping
+
+ClickORM supports defining relationships between models:
+
+```python
+from clickorm import Model, Column
+from clickorm.models.relationships import OneToMany, ManyToOne
+
+class Author(Model):
+    id: int = Column(primary_key=True)
+    name: str = Column()
+    
+    # Define a one-to-many relationship
+    books = OneToMany(lambda: Book, foreign_key="author_id")
+    
+    class Meta:
+        table_name = "authors"
+
+class Book(Model):
+    id: int = Column(primary_key=True)
+    title: str = Column()
+    author_id: int = Column(index=True)
+    
+    # Define a many-to-one relationship
+    author = ManyToOne(Author, foreign_key="author_id")
+    
+    class Meta:
+        table_name = "books"
+```
+
+You can then use these relationships in queries:
+
+```python
+# Eager load relationships
+authors = Author.query.with_related("books").all()
+
+# Access related objects
+for author in authors:
+    print(f"Author: {author.name}")
+    for book in author.books:
+        print(f"  Book: {book.title}")
+
+# Filter by related objects
+books = Book.query.join(Author).filter(Author.name == "John Doe").all()
+```
+
+For more advanced relationship mapping, including many-to-many relationships and complex queries, see [the relationships documentation](docs/relationships.md).
 
 ## Documentation
 

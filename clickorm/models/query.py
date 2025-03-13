@@ -2,10 +2,17 @@
 Query builder for ClickORM.
 """
 
-from typing import Any, Dict, Generic, List, Optional, Tuple, Type, TypeVar, Union
+from typing import Any, Dict, Generic, List, Optional, Tuple, Type, TypeVar, Union, TYPE_CHECKING
 
 from clickorm.connection import ConnectionManager
 from clickorm.exceptions import QueryError, ValidationError
+
+# Use TYPE_CHECKING to avoid circular imports
+if TYPE_CHECKING:
+    from clickorm.models.relationships import Relationship, OneToMany, ManyToOne, ManyToMany
+else:
+    # Import at runtime
+    from clickorm.models.relationships import Relationship, OneToMany, ManyToOne, ManyToMany
 
 T = TypeVar("T")
 
@@ -36,7 +43,124 @@ class Condition:
             A tuple of (sql, params).
         """
         param_name = f"{self.field.replace('.', '_')}"
-        return f"`{self.field}` {self.operator} %({param_name})s", {param_name: self.value}
+        
+        if self.operator == "IN":
+            # Handle IN operator with array
+            placeholders = []
+            params = {}
+            
+            for i, val in enumerate(self.value):
+                param_key = f"{param_name}_{i}"
+                placeholders.append(f"%({param_key})s")
+                params[param_key] = val
+            
+            return f"`{self.field}` IN ({', '.join(placeholders)})", params
+        
+        elif self.operator == "BETWEEN":
+            # Handle BETWEEN operator
+            start, end = self.value
+            start_param = f"{param_name}_start"
+            end_param = f"{param_name}_end"
+            
+            return f"`{self.field}` BETWEEN %({start_param})s AND %({end_param})s", {
+                start_param: start,
+                end_param: end
+            }
+        
+        elif self.operator in ("IS NULL", "IS NOT NULL"):
+            # Handle IS NULL and IS NOT NULL operators
+            return f"`{self.field}` {self.operator}", {}
+        
+        else:
+            # Handle standard operators
+            return f"`{self.field}` {self.operator} %({param_name})s", {param_name: self.value}
+    
+    def __and__(self, other: 'Condition') -> 'CompoundCondition':
+        """
+        Combine with another condition using AND.
+        
+        Args:
+            other: The other condition.
+            
+        Returns:
+            A CompoundCondition.
+        """
+        return CompoundCondition(self, "AND", other)
+    
+    def __or__(self, other: 'Condition') -> 'CompoundCondition':
+        """
+        Combine with another condition using OR.
+        
+        Args:
+            other: The other condition.
+            
+        Returns:
+            A CompoundCondition.
+        """
+        return CompoundCondition(self, "OR", other)
+
+
+class CompoundCondition(Condition):
+    """
+    Represents a compound query condition (AND/OR).
+    """
+    
+    def __init__(self, left: Condition, operator: str, right: Condition):
+        """
+        Initialize a new CompoundCondition.
+        
+        Args:
+            left: The left condition.
+            operator: The operator (AND/OR).
+            right: The right condition.
+        """
+        self.left = left
+        self.operator = operator
+        self.right = right
+    
+    def to_sql(self) -> Tuple[str, Dict[str, Any]]:
+        """
+        Convert the compound condition to SQL.
+        
+        Returns:
+            A tuple of (sql, params).
+        """
+        left_sql, left_params = self.left.to_sql()
+        right_sql, right_params = self.right.to_sql()
+        
+        # Merge parameters
+        params = {**left_params, **right_params}
+        
+        # Build SQL
+        sql = f"({left_sql} {self.operator} {right_sql})"
+        
+        return sql, params
+
+
+class ExistsCondition(Condition):
+    """
+    Represents an EXISTS condition with a subquery.
+    """
+    
+    def __init__(self, query: str, params: Dict[str, Any]):
+        """
+        Initialize a new ExistsCondition.
+        
+        Args:
+            query: The subquery.
+            params: The parameters for the subquery.
+        """
+        self.query = query
+        self.params = params
+    
+    def to_sql(self) -> Tuple[str, Dict[str, Any]]:
+        """
+        Convert the EXISTS condition to SQL.
+        
+        Returns:
+            A tuple of (sql, params).
+        """
+        return f"EXISTS ({self.query})", self.params
 
 
 class Field:
@@ -202,6 +326,8 @@ class Query(Generic[T]):
         self.limit_value = None
         self.offset_value = None
         self.select_fields = []
+        self.joins = []
+        self.eager_load = []
     
     def __getattr__(self, name: str) -> Field:
         """
@@ -304,6 +430,20 @@ class Query(Generic[T]):
             elif isinstance(field, str):
                 self.select_fields.append(field)
         return self
+        
+    def join(self, model_cls: Type, on: Optional[Condition] = None) -> "Query[T]":
+        """
+        Add a join to the query.
+        
+        Args:
+            model_cls: The model class to join with.
+            on: The join condition. If None, will try to infer from relationships.
+            
+        Returns:
+            The Query instance.
+        """
+        self.joins.append((model_cls, on))
+        return self
     
     def _build_query(self) -> Tuple[str, Dict[str, Any]]:
         """
@@ -339,6 +479,37 @@ class Query(Generic[T]):
         # Build the query
         query = f"SELECT {select_clause} FROM {from_clause}"
         
+        # Handle joins
+        for model_cls, on in self.joins:
+            if on:
+                # Use the explicit join condition
+                join_sql, join_params = on.to_sql()
+                query += f" JOIN `{model_cls.get_table_name()}` ON {join_sql}"
+                params.update(join_params)
+            else:
+                # Try to infer join condition from relationships
+                relationships = self.model_cls.get_relationships()
+                
+                # Find a relationship to the joined model
+                for rel_name, rel in relationships.items():
+                    if rel.get_model_cls() == model_cls:
+                        # Found a relationship to the joined model
+                        if hasattr(rel, "foreign_key") and rel.foreign_key:
+                            if isinstance(rel, ManyToOne):
+                                # This model has a foreign key to the joined model
+                                query += f" JOIN `{model_cls.get_table_name()}` ON `{self.model_cls.get_table_name()}`.`{rel.foreign_key}` = `{model_cls.get_table_name()}`.`{model_cls.get_primary_key_columns()[0].name}`"
+                                break
+                            elif isinstance(rel, OneToMany):
+                                # The joined model has a foreign key to this model
+                                query += f" JOIN `{model_cls.get_table_name()}` ON `{self.model_cls.get_table_name()}`.`{self.model_cls.get_primary_key_columns()[0].name}` = `{model_cls.get_table_name()}`.`{rel.foreign_key}`"
+                                break
+                            elif isinstance(rel, ManyToMany):
+                                # This is a many-to-many relationship
+                                # We need to join through the junction table
+                                query += f" JOIN `{rel.junction_table}` ON `{self.model_cls.get_table_name()}`.`{self.model_cls.get_primary_key_columns()[0].name}` = `{rel.junction_table}`.`{rel.local_key}`"
+                                query += f" JOIN `{model_cls.get_table_name()}` ON `{rel.junction_table}`.`{rel.remote_key}` = `{model_cls.get_table_name()}`.`{model_cls.get_primary_key_columns()[0].name}`"
+                                break
+        
         if where_clauses:
             query += f" WHERE {' AND '.join(where_clauses)}"
         
@@ -356,6 +527,29 @@ class Query(Generic[T]):
         
         return query, params
     
+    def exists(self) -> ExistsCondition:
+        """
+        Create an EXISTS condition from this query.
+        
+        Returns:
+            An ExistsCondition.
+        """
+        query, params = self._build_query()
+        return ExistsCondition(query, params)
+    
+    def with_related(self, *relationships: str) -> "Query[T]":
+        """
+        Eager load related objects.
+        
+        Args:
+            *relationships: The names of relationships to eager load.
+            
+        Returns:
+            The Query instance.
+        """
+        self.eager_load.extend(relationships)
+        return self
+        
     def all(self) -> List[T]:
         """
         Execute the query and return all results.
@@ -379,7 +573,21 @@ class Query(Generic[T]):
             columns = list(self.model_cls.get_columns().keys())
         
         # Create model instances
-        return [self.model_cls.from_row(row, columns) for row in result]
+        models = [self.model_cls.from_row(row, columns) for row in result]
+        
+        # Handle eager loading
+        if self.eager_load and models:
+            relationships = self.model_cls.get_relationships()
+            
+            for rel_name in self.eager_load:
+                if rel_name in relationships:
+                    rel = relationships[rel_name]
+                    
+                    # Load the relationship for each model
+                    for model in models:
+                        setattr(model, rel_name, model._load_relationship(rel_name, rel))
+        
+        return models
     
     def first(self) -> Optional[T]:
         """
@@ -425,3 +633,48 @@ class Query(Generic[T]):
             raise QueryError(f"Failed to execute query: {e}")
         
         return result[0][0] if result else 0
+        
+    def copy(self) -> "Query[T]":
+        """
+        Create a copy of this query.
+        
+        Returns:
+            A new Query instance with the same settings.
+        """
+        query = Query(self.model_cls)
+        query.conditions = self.conditions.copy()
+        query.order_by_clauses = self.order_by_clauses.copy()
+        query.group_by_clauses = self.group_by_clauses.copy()
+        query.limit_value = self.limit_value
+        query.offset_value = self.offset_value
+        query.select_fields = self.select_fields.copy()
+        query.joins = self.joins.copy()
+        query.eager_load = self.eager_load.copy()
+        return query
+        
+    def paginate(self, page: int = 1, per_page: int = 20) -> Tuple[List[T], int, int, int]:
+        """
+        Get a page of results.
+        
+        Args:
+            page: The page number (1-indexed).
+            per_page: The number of items per page.
+            
+        Returns:
+            A tuple of (items, total, page, pages).
+        """
+        # Calculate offset
+        offset = (page - 1) * per_page
+        
+        # Get total count
+        count_query = self.copy()
+        total = count_query.count()
+        
+        # Calculate total pages
+        pages = (total + per_page - 1) // per_page if per_page > 0 else 0
+        
+        # Get items for current page
+        self.limit(per_page).offset(offset)
+        items = self.all()
+        
+        return items, total, page, pages

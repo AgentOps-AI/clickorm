@@ -7,7 +7,10 @@ This module defines the mapping between Python types, Pydantic types, and ClickH
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union, get_args, get_origin, TypeVar
+
+# Define ClickHouseType as a TypeVar that can be any string
+ClickHouseType = TypeVar('ClickHouseType', bound=str)
 
 # Basic types
 Int8 = int
@@ -61,6 +64,17 @@ PYTHON_TO_CLICKHOUSE = {
     tuple: "Tuple",
     Decimal: "Decimal64",
     set: "Array",
+    # Complex types
+    List[str]: "Array(String)",
+    List[int]: "Array(Int32)",
+    List[float]: "Array(Float64)",
+    List[bool]: "Array(UInt8)",
+    Dict[str, str]: "Map(String, String)",
+    Dict[str, int]: "Map(String, Int32)",
+    Dict[str, float]: "Map(String, Float64)",
+    Dict[str, Any]: "Map(String, String)",
+    Dict[int, str]: "Map(Int32, String)",
+    Dict[int, int]: "Map(Int32, Int32)",
 }
 
 # Type mapping from ClickHouse to Python
@@ -106,7 +120,47 @@ def get_clickhouse_type(python_type: Type) -> str:
     Returns:
         The ClickHouse type as a string.
     """
-    return PYTHON_TO_CLICKHOUSE.get(python_type, "String")
+    # Check if the type is directly in the mapping
+    if python_type in PYTHON_TO_CLICKHOUSE:
+        return PYTHON_TO_CLICKHOUSE[python_type]
+    
+    # Handle generic types
+    origin = get_origin(python_type)
+    args = get_args(python_type)
+    
+    if origin is list or origin is List:
+        # Handle List[T]
+        if args:
+            element_type = get_clickhouse_type(args[0])
+            return f"Array({element_type})"
+        return "Array(String)"
+    
+    elif origin is dict or origin is Dict:
+        # Handle Dict[K, V]
+        if len(args) == 2:
+            key_type = get_clickhouse_type(args[0])
+            value_type = get_clickhouse_type(args[1])
+            return f"Map({key_type}, {value_type})"
+        return "Map(String, String)"
+    
+    elif origin is tuple or origin is Tuple:
+        # Handle Tuple[T1, T2, ...]
+        if args:
+            element_types = [get_clickhouse_type(arg) for arg in args]
+            return f"Tuple({', '.join(element_types)})"
+        return "Tuple(String)"
+    
+    elif origin is Union:
+        # Handle Union[T, None] (Optional[T])
+        if type(None) in args:
+            # This is an Optional[T]
+            non_none_args = [arg for arg in args if arg is not type(None)]
+            if len(non_none_args) == 1:
+                return f"Nullable({get_clickhouse_type(non_none_args[0])})"
+        return "String"
+    
+    # Default to String for unknown types
+    return "String"
 
 
 def get_python_type(clickhouse_type: str) -> Type:

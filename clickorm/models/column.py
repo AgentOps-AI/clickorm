@@ -15,6 +15,61 @@ class Column:
     
     This class is used to define columns in ClickORM models.
     """
+    
+    def __eq__(self, other):
+        """Support equality comparison for query conditions."""
+        from clickorm.models.query import Condition
+        return Condition(self.name, "=", other)
+    
+    def __ne__(self, other):
+        """Support inequality comparison for query conditions."""
+        from clickorm.models.query import Condition
+        return Condition(self.name, "!=", other)
+    
+    def __lt__(self, other):
+        """Support less than comparison for query conditions."""
+        from clickorm.models.query import Condition
+        return Condition(self.name, "<", other)
+    
+    def __le__(self, other):
+        """Support less than or equal comparison for query conditions."""
+        from clickorm.models.query import Condition
+        return Condition(self.name, "<=", other)
+    
+    def __gt__(self, other):
+        """Support greater than comparison for query conditions."""
+        from clickorm.models.query import Condition
+        return Condition(self.name, ">", other)
+    
+    def __ge__(self, other):
+        """Support greater than or equal comparison for query conditions."""
+        from clickorm.models.query import Condition
+        return Condition(self.name, ">=", other)
+    
+    def like(self, pattern):
+        """Support LIKE operator for query conditions."""
+        from clickorm.models.query import Condition
+        return Condition(self.name, "LIKE", pattern)
+    
+    def in_(self, values):
+        """Support IN operator for query conditions."""
+        from clickorm.models.query import Condition
+        return Condition(self.name, "IN", values)
+    
+    def between(self, start, end):
+        """Support BETWEEN operator for query conditions."""
+        from clickorm.models.query import Condition
+        return Condition(self.name, "BETWEEN", (start, end))
+    
+    def is_null(self):
+        """Support IS NULL operator for query conditions."""
+        from clickorm.models.query import Condition
+        return Condition(self.name, "IS NULL", None)
+    
+    def is_not_null(self):
+        """Support IS NOT NULL operator for query conditions."""
+        from clickorm.models.query import Condition
+        return Condition(self.name, "IS NOT NULL", None)
 
     def __init__(
         self,

@@ -3,7 +3,7 @@ Base model for ClickORM.
 """
 
 import inspect
-from typing import Any, ClassVar, Dict, List, Optional, Set, Type, TypeVar, get_type_hints
+from typing import Any, ClassVar, Dict, List, Optional, Set, Type, TypeVar, get_type_hints, TYPE_CHECKING
 
 from pydantic import BaseModel, create_model
 
@@ -11,6 +11,13 @@ from clickorm.connection import ConnectionManager
 from clickorm.exceptions import QueryError, SchemaError, ValidationError
 from clickorm.models.column import Column
 from clickorm.models.query import Query
+
+# Use TYPE_CHECKING to avoid circular imports
+if TYPE_CHECKING:
+    from clickorm.models.relationships import Relationship, OneToMany, ManyToOne, ManyToMany
+else:
+    # Import at runtime
+    from clickorm.models.relationships import Relationship, OneToMany, ManyToOne, ManyToMany
 
 
 T = TypeVar("T", bound="Model")
@@ -420,6 +427,118 @@ class Model(metaclass=ModelMeta):
             conn.execute(query, params)
         except Exception as e:
             raise QueryError(f"Failed to delete model: {e}")
+    
+    @classmethod
+    def get_relationships(cls) -> Dict[str, Relationship]:
+        """
+        Get all relationships defined on the model.
+        
+        Returns:
+            A dictionary of relationship names to Relationship instances.
+        """
+        if not hasattr(cls, "__relationships_cache__"):
+            relationships = {}
+            for name, attr in inspect.getmembers(cls):
+                if isinstance(attr, Relationship):
+                    relationships[name] = attr
+            cls.__relationships_cache__ = relationships
+        return cls.__relationships_cache__
+    
+    def _load_relationship(self, name: str, relationship: Relationship) -> Any:
+        """
+        Load related objects for a relationship.
+        
+        Args:
+            name: The name of the relationship.
+            relationship: The relationship instance.
+            
+        Returns:
+            The related object(s).
+        """
+        # Get the model class, resolving callables if necessary
+        model_cls = relationship.get_model_cls()
+        
+        if isinstance(relationship, OneToMany):
+            # Get the primary key of this model
+            pk_columns = self.__class__.get_primary_key_columns()
+            if not pk_columns:
+                return []
+            
+            # Get the primary key value
+            pk_name = pk_columns[0].name
+            pk_value = getattr(self, pk_name)
+            
+            # Query the related model
+            return model_cls.query.filter(
+                getattr(model_cls, relationship.foreign_key) == pk_value
+            ).all()
+        
+        elif isinstance(relationship, ManyToOne):
+            # Get the foreign key value
+            fk_value = getattr(self, relationship.foreign_key)
+            if fk_value is None:
+                return None
+            
+            # Get the primary key of the related model
+            pk_columns = model_cls.get_primary_key_columns()
+            if not pk_columns:
+                return None
+            
+            # Get the primary key name
+            pk_name = pk_columns[0].name
+            
+            # Query the related model
+            return model_cls.query.filter(
+                getattr(model_cls, pk_name) == fk_value
+            ).first()
+        
+        elif isinstance(relationship, ManyToMany):
+            # This requires a more complex query with a join
+            # Implementation depends on ClickHouse's join capabilities
+            conn = ConnectionManager.get_default()
+            
+            # Get the primary key of this model
+            pk_columns = self.__class__.get_primary_key_columns()
+            if not pk_columns:
+                return []
+            
+            # Get the primary key value
+            pk_name = pk_columns[0].name
+            pk_value = getattr(self, pk_name)
+            
+            # Query the junction table to get the related IDs
+            query = f"""
+            SELECT `{relationship.remote_key}` 
+            FROM `{relationship.junction_table}` 
+            WHERE `{relationship.local_key}` = %({relationship.local_key})s
+            """
+            params = {relationship.local_key: pk_value}
+            
+            try:
+                result = conn.execute(query, params)
+            except Exception as e:
+                raise QueryError(f"Failed to query junction table: {e}")
+            
+            if not result:
+                return []
+            
+            # Get the related IDs
+            related_ids = [row[0] for row in result]
+            
+            # Get the primary key of the related model
+            pk_columns = model_cls.get_primary_key_columns()
+            if not pk_columns:
+                return []
+            
+            # Get the primary key name
+            pk_name = pk_columns[0].name
+            
+            # Query the related model
+            return model_cls.query.filter(
+                getattr(model_cls, pk_name).in_(related_ids)
+            ).all()
+        
+        return None
     
     @classmethod
     @property
